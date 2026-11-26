@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import type { ReactNode } from 'react';
+import { type ReactNode, useState } from 'react';
 import { AUDIO_TAG_OPTIONS, audioKindFromTags } from '@/shared/scene/audio-kind';
 import { Button } from '@/shared/ui/Button';
 import { ConfirmationDialog } from '@/shared/ui/ConfirmationDialog';
@@ -13,6 +13,7 @@ import { Feedback } from '../../shared/ui/Feedback';
 import { assetKeys } from '../assets';
 import { useAuth } from '../auth';
 import { profileKey } from '../profile';
+import { LibraryLicenseField } from './components/LibraryLicenseField';
 import { createAdminLibraryApi } from './library-api';
 import { useAdminAction } from './ui';
 export const libraryApi = createAdminLibraryApi(apiClient);
@@ -122,6 +123,7 @@ export function CategorySelect({
     label = 'Danh mục',
     name = 'categoryId',
     emptyLabel = 'Không có',
+    labelClassName,
 }: {
     categories: AssetCategory[];
     onValueChange?: (value: string) => void;
@@ -130,10 +132,11 @@ export function CategorySelect({
     label?: string;
     name?: string;
     emptyLabel?: string;
+    labelClassName?: string;
 }) {
     return (
         <Field orientation="contents">
-            <FieldLabel htmlFor={`library-${name}`}>
+            <FieldLabel htmlFor={`library-${name}`} className={labelClassName}>
                 {label}
                 <FormSelect
                     id={`library-${name}`}
@@ -169,6 +172,7 @@ export function LibraryMetadata({
     asset: Asset;
     categories: AssetCategory[];
 }) {
+    const [license, setLicense] = useState(asset.license || '');
     return (
         <>
             <Field orientation="contents">
@@ -184,18 +188,8 @@ export function LibraryMetadata({
                 </FieldLabel>
             </Field>
             <CategorySelect categories={categories} value={asset.categoryId || ''} />
-            <Field orientation="contents">
-                <FieldLabel htmlFor="library-license">
-                    Giấy phép sử dụng
-                    <Input
-                        id="library-license"
-                        name="license"
-                        required
-                        maxLength={50}
-                        defaultValue={asset.license || ''}
-                    />
-                </FieldLabel>
-            </Field>
+            <LibraryLicenseField id="library-license" value={license} onValueChange={setLicense} />
+            <input type="hidden" name="license" value={license} />
             <Field orientation="contents">
                 <FieldLabel htmlFor="library-author">
                     Tác giả gốc
