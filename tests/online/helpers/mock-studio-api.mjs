@@ -148,7 +148,7 @@ export function createStudioMockState(options = {}) {
             id: marker1Id,
             number: 1,
             imageUrl: `${CDN_ORIGIN}/markers/marker-1.png`,
-            markerScore: 5,
+            assessment: null,
             isActive: true,
             validatedAt: NOW,
         },
@@ -156,7 +156,7 @@ export function createStudioMockState(options = {}) {
             id: marker2Id,
             number: 2,
             imageUrl: `${CDN_ORIGIN}/markers/marker-2.png`,
-            markerScore: 4,
+            assessment: null,
             isActive: false,
             validatedAt: null,
         },
@@ -282,6 +282,7 @@ export function createStudioMockState(options = {}) {
         markers,
         notifications,
         reportsByBook,
+        moderationPreviews: new Map(),
         jobs: jobsMap,
         modelGenerations: [],
         versionsByBook: new Map([
@@ -933,14 +934,18 @@ parent.postMessage({ type: 'ready', id }, location.origin);
                 const bid = path.split('/').at(-1);
                 const book = state.books.get(bid);
                 if (!book) return replyError('NOT_FOUND', 404, 'Không tìm thấy sách.');
+                const preview = state.moderationPreviews.get(url.searchParams.get('preview'));
+                const pages = preview?.pages ?? toBookDetail(book).pages;
                 return reply({
                     book: {
                         ...toBookSummary(book),
                         author: { id: author.id, displayName: author.displayName },
                         description: book.description,
                         takenDownReason: book.takenDownReason || null,
-                        pages: toBookDetail(book).pages,
+                        pages,
+                        pageCount: pages.length,
                     },
+                    preview: preview?.source,
                     reports: state.reportsByBook.get(bid) || [],
                 });
             }
@@ -1091,13 +1096,24 @@ parent.postMessage({ type: 'ready', id }, location.origin);
                     id: nextUuid('ffffffff-ffff-4fff-8fff'),
                     number: state.markers.length + 1,
                     imageUrl: `${CDN_ORIGIN}/markers/marker-${state.markers.length + 1}.png`,
-                    markerScore: 4,
+                    assessment: null,
                     isActive: Boolean(bodyJson?.isActive),
                     validatedAt: NOW,
                 };
                 state.markers.push(marker);
                 addAudit('MANAGE_MARKER', 'MARKER', marker.id, bodyJson);
                 return reply(marker, 201);
+            }
+            if (
+                method === 'PUT' &&
+                path.endsWith('/assessment') &&
+                path.startsWith('/admin/bookaria-markers/')
+            ) {
+                const mid = path.split('/').at(-2);
+                const marker = state.markers.find((m) => m.id === mid);
+                if (!marker) return replyError('NOT_FOUND', 404, 'Không tìm thấy marker.');
+                marker.assessment = { ...bodyJson, assessedAt: NOW };
+                return reply(marker);
             }
             if (method === 'PATCH' && path.startsWith('/admin/bookaria-markers/')) {
                 const mid = path.split('/').at(-1);
@@ -1136,10 +1152,18 @@ parent.postMessage({ type: 'ready', id }, location.origin);
             if (method === 'GET' && path === '/admin/audit-logs') {
                 const action = url.searchParams.get('action');
                 const targetType = url.searchParams.get('targetType');
+                const targetId = url.searchParams.get('targetId')?.toLowerCase();
+                const actorId = url.searchParams.get('actorId')?.toLowerCase();
                 const items = state.auditLogs.filter(
                     (l) =>
                         (!action || l.action === action) &&
-                        (!targetType || l.target.type === targetType),
+                        (!targetType || l.target.type === targetType) &&
+                        (!actorId || l.actor.id.toLowerCase() === actorId) &&
+                        (!targetId ||
+                            l.target.id.toLowerCase() === targetId ||
+                            (targetType === 'JOB' &&
+                                l.action === 'RETRY_JOB' &&
+                                l.detail?.newJobId === targetId)),
                 );
                 return replyPage(items, Number(url.searchParams.get('page') || 1));
             }

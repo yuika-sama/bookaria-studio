@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { createSquarePng, TINY_PNG } from './helpers/fixtures.mjs';
+import { createPage, createSquarePng, makeId, TINY_PNG } from './helpers/fixtures.mjs';
 import { installStudioMocks } from './helpers/mock-studio-api.mjs';
 
 test.describe('Studio Admin: RBAC, Dashboard, Users, Moderation, Library, Categories, Markers, Jobs & Audit', () => {
@@ -157,40 +157,175 @@ test.describe('Studio Admin: RBAC, Dashboard, Users, Moderation, Library, Catego
         await expect(privateBook).toBeVisible();
     });
 
-    test('moderation queue, takedown (requires reason), reinstate, and dismiss reports', async ({
+    test('moderation queue opens book details in place and supports takedown and reinstatement', async ({
         page,
     }) => {
         const mock = await installStudioMocks(page, { role: 'ADMIN' });
-
         await page.goto('/admin/moderation');
-        await expect(page.getByText('Đại Dương Xanh AR')).toBeVisible();
-        await expect(page.getByText('1 báo cáo')).toBeVisible();
 
-        // Takedown book
-        await page.getByRole('button', { name: 'Gỡ sách vi phạm' }).first().click();
-        const takedownModal = page.getByRole('dialog');
-        await expect(takedownModal.getByRole('heading', { name: 'Gỡ sách vi phạm' })).toBeVisible();
-        await takedownModal.locator('#takedown-reason').fill('Vi phạm bản quyền minh họa trang 1.');
-        await takedownModal.getByRole('button', { name: /Gỡ sách|Xác nhận/i }).click();
-        await expect(takedownModal).toBeHidden();
+        await expect(page.getByText('1 báo cáo', { exact: true })).toBeVisible();
+        await expect(page.getByRole('link', { name: 'Mở trang chi tiết sách' })).toHaveCount(0);
+        await page.getByRole('button', { name: 'Xem chi tiết báo cáo', exact: true }).click();
+        const detail = page.getByRole('dialog', { name: 'Chi tiết kiểm duyệt sách' });
+        await expect(detail.getByRole('heading', { name: 'Đại Dương Xanh AR' })).toBeVisible();
+        await expect(
+            detail.getByText('Cần xác minh quyền sử dụng hình minh họa trang 1.'),
+        ).toBeVisible();
+        await expect(detail.getByRole('link', { name: 'Chi tiết đầy đủ' })).toHaveCount(0);
+        await expect(page).toHaveURL(/\/admin\/moderation$/);
+
+        await detail.getByRole('button', { name: 'Gỡ sách', exact: true }).click();
+        const takedown = page.getByRole('dialog', { name: 'Gỡ sách vi phạm' });
+        const confirm = takedown.getByRole('button', { name: 'Xác nhận gỡ sách' });
+        await expect(takedown.getByRole('alert')).toHaveCount(0);
+        await confirm.click();
+        await expect(takedown.getByRole('alert')).toContainText('Vui lòng nhập lý do gỡ sách');
+        await takedown.getByLabel('Lý do gỡ sách').fill('Vi phạm bản quyền minh họa trang 1.');
+        await confirm.click();
+        await expect(takedown).toBeHidden();
+        await expect(page.getByText('Không có báo cáo đang chờ')).toBeVisible();
         expect(
             mock.state.calls.some((c) => c.method === 'POST' && c.path.endsWith('/takedown')),
         ).toBe(true);
 
-        // Navigate to /admin/books/:bookId and verify book was taken down & can be reinstated
-        await page.goto(`/admin/books/${mock.state.ids.book2Id}`);
-        await expect(page.getByRole('heading', { name: 'Đại Dương Xanh AR' })).toBeVisible();
-        await page.getByLabel(/Ghi chú xử lý/).fill('Tác giả đã bổ sung giấy phép.');
-        await page.getByRole('button', { name: 'Xem lại và thực hiện thao tác' }).click();
-        const reinstateDialog = page.getByRole('alertdialog');
-        await expect(reinstateDialog).toBeVisible();
-        await reinstateDialog.getByRole('button', { name: /Xác nhận khôi phục/i }).click();
-        await expect(reinstateDialog).toBeHidden();
-        await expect
-            .poll(() =>
-                mock.state.calls.some((c) => c.method === 'POST' && c.path.endsWith('/reinstate')),
-            )
-            .toBe(true);
+        await page.getByRole('link', { name: 'Tra cứu tất cả sách' }).click();
+        await page.getByRole('button', { name: 'Đại Dương Xanh AR', exact: true }).click();
+        await expect(detail.getByRole('link', { name: 'Chi tiết đầy đủ' })).toBeVisible();
+        await detail.getByRole('button', { name: 'Khôi phục sách' }).click();
+        const reinstate = page.getByRole('dialog', { name: 'Khôi phục sách' });
+        await reinstate.getByLabel('Ghi chú khôi phục').fill('Tác giả đã bổ sung giấy phép.');
+        await reinstate.getByRole('button', { name: 'Xác nhận khôi phục' }).click();
+        await expect(reinstate).toBeHidden();
+        expect(
+            mock.state.calls.some((c) => c.method === 'POST' && c.path.endsWith('/reinstate')),
+        ).toBe(true);
+    });
+
+    test('moderation queue can retry loading details and dismiss a report', async ({ page }) => {
+        const mock = await installStudioMocks(page, { role: 'ADMIN' });
+        await page.route(
+            new RegExp(`/admin/books/${mock.state.ids.book2Id}(?:\\?.*)?$`),
+            (route) => route.abort(),
+            {
+                times: 1,
+            },
+        );
+
+        await page.goto('/admin/moderation');
+        await page.getByRole('button', { name: 'Xem chi tiết báo cáo', exact: true }).click();
+        const detail = page.getByRole('dialog', { name: 'Chi tiết kiểm duyệt sách' });
+        await expect(detail.getByRole('alert')).toContainText('Chưa tải được thông tin sách.');
+        await detail.getByRole('button', { name: 'Thử tải lại' }).click();
+        await detail.getByRole('button', { name: 'Bỏ qua báo cáo' }).click();
+
+        const dismiss = page.getByRole('dialog', { name: 'Bỏ qua báo cáo vi phạm' });
+        await expect(dismiss.getByRole('button', { name: 'Bỏ qua báo cáo' })).toBeVisible();
+        await dismiss.getByRole('button', { name: 'Bỏ qua báo cáo' }).click();
+        await expect(dismiss).toBeHidden();
+        await expect(page.getByText('Không có báo cáo đang chờ')).toBeVisible();
+        expect(
+            mock.state.calls.some(
+                (c) => c.method === 'POST' && c.path.endsWith('/reports/dismiss'),
+            ),
+        ).toBe(true);
+    });
+
+    test('moderation details show seven pages in one preview with mobile tabs', async ({
+        page,
+    }) => {
+        const mock = await installStudioMocks(page, { role: 'ADMIN' });
+        const { book2Id } = mock.state.ids;
+        const book = mock.state.books.get(book2Id);
+        for (let orderIndex = 1; orderIndex < 7; orderIndex += 1) {
+            const id = makeId(710 + orderIndex);
+            mock.state.pages.set(id, createPage(book2Id, id, orderIndex));
+            book.pageIds.push(id);
+        }
+        const reports = mock.state.reportsByBook.get(book2Id);
+        reports.push({
+            ...reports[0],
+            id: makeId(810),
+            status: 'ACTIONED',
+            handledAt: reports[0].createdAt,
+        });
+
+        await page.setViewportSize({ width: 1280, height: 720 });
+        await page.goto('/admin/moderation');
+        await page.getByRole('button', { name: 'Xem chi tiết báo cáo', exact: true }).click();
+        const detail = page.getByRole('dialog', { name: 'Chi tiết kiểm duyệt sách' });
+        await expect(detail.getByRole('heading', { name: 'Báo cáo vi phạm (2)' })).toBeVisible();
+        await expect(detail.getByRole('heading', { name: 'Xem trước trang (7)' })).toBeVisible();
+        await expect(detail.getByRole('img', { name: /^Ảnh trang/ })).toHaveCount(1);
+        const picker = detail.getByRole('combobox', { name: 'Chọn trang xem trước' });
+        await picker.click();
+        await page.getByRole('option', { name: 'Trang 7', exact: true }).click();
+        await expect(detail.getByRole('img', { name: 'Ảnh trang 7' })).toBeVisible();
+        await expect(detail.getByRole('button', { name: 'Trang sau' })).toBeDisabled();
+        await detail.getByRole('button', { name: 'Trang trước' }).click();
+        await expect(detail.getByRole('img', { name: 'Ảnh trang 6' })).toBeVisible();
+
+        await page.setViewportSize({ width: 390, height: 700 });
+        const reportsTab = detail.getByRole('tab', { name: 'Báo cáo (2)' });
+        const pagesTab = detail.getByRole('tab', { name: 'Trang sách (7)' });
+        await expect(reportsTab).toHaveAttribute('aria-selected', 'true');
+        await expect(picker).toBeHidden();
+        await pagesTab.click();
+        await detail.getByRole('button', { name: 'Trang sau' }).click();
+        await expect(detail.getByRole('img', { name: 'Ảnh trang 2' })).toBeVisible();
+        await expect(detail.getByRole('button', { name: 'Gỡ sách', exact: true })).toBeInViewport();
+        await reportsTab.click();
+        await pagesTab.click();
+        await expect(detail.getByRole('img', { name: 'Ảnh trang 2' })).toBeVisible();
+    });
+
+    test('moderation details open the reported release and identify the current one', async ({
+        page,
+    }) => {
+        const { state } = await installStudioMocks(page, { role: 'ADMIN' });
+        const { book2Id, page2Id } = state.ids;
+        const originalId = makeId(781);
+        const currentId = makeId(782);
+        const originalPageId = makeId(783);
+        const reports = state.reportsByBook.get(book2Id);
+        Object.assign(reports[0], {
+            version: { id: originalId, number: 1 },
+            pageId: originalPageId,
+        });
+        const base = state.pages.get(page2Id);
+        const oldPages = [
+            { ...base, aspect: Math.SQRT2 },
+            {
+                ...base,
+                id: originalPageId,
+                title: 'Trang được báo cáo',
+                orderIndex: 1,
+                aspect: Math.SQRT2,
+            },
+        ];
+        state.moderationPreviews.set('reported', {
+            pages: oldPages,
+            source: { source: 'published', versionId: originalId, versionNo: 1, isCurrent: false },
+        });
+        state.moderationPreviews.set('current', {
+            pages: [{ ...base, title: 'Trang của bản hiện tại', aspect: Math.SQRT2 }],
+            source: { source: 'published', versionId: currentId, versionNo: 2, isCurrent: true },
+        });
+
+        await page.goto('/admin/moderation');
+        await page.getByRole('button', { name: 'Xem chi tiết báo cáo', exact: true }).click();
+        const detail = page.getByRole('dialog', { name: 'Chi tiết kiểm duyệt sách' });
+        await expect(detail.getByText('Bản xuất bản v1', { exact: true })).toBeVisible();
+        await expect(detail.getByText('Trang được báo cáo')).toBeVisible();
+        const oldPage = await detail.getByRole('img', { name: 'Ảnh trang 2' }).boundingBox();
+        await detail.getByRole('button', { name: 'Trang trước' }).click();
+        const otherPage = await detail.getByRole('img', { name: 'Ảnh trang 1' }).boundingBox();
+        expect(otherPage).toMatchObject({ width: oldPage.width, height: oldPage.height });
+        await detail.getByRole('button', { name: 'Xem trang báo cáo' }).click();
+        await expect(detail.getByText('Trang được báo cáo')).toBeVisible();
+
+        await detail.getByRole('button', { name: 'Xem bản hiện tại' }).click();
+        await expect(detail.getByText('Bản xuất bản v2 · Hiện tại')).toBeVisible();
+        await expect(detail.getByText('Trang của bản hiện tại')).toBeVisible();
     });
 
     test('admin category modals and shared library guards', async ({ page }) => {
@@ -403,18 +538,60 @@ test.describe('Studio Admin: RBAC, Dashboard, Users, Moderation, Library, Catego
 
         await page.goto('/admin/markers');
         await expect(
-            page.getByRole('heading', { name: 'Bộ marker Bookaria', exact: true }),
+            page.getByRole('heading', { name: 'Quản lý marker', exact: true }),
         ).toBeVisible();
         await expect(page.getByText('Marker số #1')).toBeVisible();
 
-        // 1. Toggle marker #2 active state
-        await page.getByRole('button', { name: 'Bật marker' }).click();
-        const toggleDialog = page.getByRole('dialog');
-        await toggleDialog.getByRole('button', { name: /Bật marker|Xác nhận/i }).click();
+        // 1. Open marker details and enable it from the confirmation dialog.
+        const markerName = page.getByRole('button', { name: 'Marker số #2', exact: true });
+        await markerName.click();
+        const detail = page.getByRole('dialog', { name: 'Chi tiết marker số #2', exact: true });
+        await expect(detail.getByRole('link', { name: 'Ảnh gốc' })).toBeVisible();
+        await expect(detail.getByText('Tạm dừng cấp phát mới')).toBeVisible();
+        await detail.getByRole('button', { name: 'Đánh giá ảnh', exact: true }).click();
+        const evaluation = page.getByRole('dialog', { name: 'Đánh giá marker số #2', exact: true });
+        await expect(evaluation.locator('input[type="file"]')).toHaveCount(0);
+        await expect(
+            evaluation.getByRole('img', { name: 'Phân bố điểm: 2%', exact: true }),
+        ).toBeVisible();
+        await evaluation.getByRole('button', { name: 'Lưu đánh giá', exact: true }).click();
+        await expect(
+            detail.getByRole('heading', { name: 'Đánh giá gần nhất', exact: true }),
+        ).toBeVisible();
+        await expect(
+            detail.getByRole('img', { name: 'Phân bố điểm: 2%', exact: true }),
+        ).toBeVisible();
+        const writes = () =>
+            mock.state.calls.filter(
+                ({ method, path }) => method === 'PUT' && path.endsWith('/assessment'),
+            );
+        expect(writes()).toHaveLength(1);
+        expect(writes()[0].body).toMatchObject({ distribution: 0.02, uniqueness: 1, dimension: 1 });
+
+        await detail.getByRole('button', { name: 'Đánh giá lại', exact: true }).click();
+        const reassessment = page.getByRole('dialog', {
+            name: 'Đánh giá lại marker số #2',
+            exact: true,
+        });
+        await expect(
+            reassessment.getByRole('button', { name: 'Lưu đánh giá', exact: true }),
+        ).toBeVisible();
+        await reassessment.getByRole('button', { name: 'Đóng', exact: true }).last().click();
+        await expect(
+            detail.getByRole('heading', { name: 'Đánh giá gần nhất', exact: true }),
+        ).toBeVisible();
+        expect(writes()).toHaveLength(1);
+
+        await detail.getByRole('button', { name: 'Bật marker', exact: true }).click();
+        const toggleDialog = page.getByRole('dialog', { name: 'Bật marker số #2?', exact: true });
+        await toggleDialog.getByRole('button', { name: 'Bật marker', exact: true }).click();
         await expect
             .poll(() =>
                 mock.state.calls.some(
-                    (c) => c.method === 'PATCH' && c.path.startsWith('/admin/bookaria-markers/'),
+                    (c) =>
+                        c.method === 'PATCH' &&
+                        c.path.startsWith('/admin/bookaria-markers/') &&
+                        c.body?.isActive === true,
                 ),
             )
             .toBe(true);
@@ -431,7 +608,7 @@ test.describe('Studio Admin: RBAC, Dashboard, Users, Moderation, Library, Catego
             buffer: TINY_PNG,
         });
         await expect(testDialog.getByText(/256 × 256 px|Ảnh phân tích/)).toBeVisible();
-        await testDialog.getByRole('button', { name: 'Đóng thử điểm marker' }).click();
+        await testDialog.locator('[data-slot="dialog-close"]').click();
 
         // 3. Register new marker via mocked marker-compiler + R2 upload + register endpoint
         await page.getByRole('button', { name: 'Đăng ký marker' }).click();
@@ -451,7 +628,15 @@ test.describe('Studio Admin: RBAC, Dashboard, Users, Moderation, Library, Catego
         const mock = await installStudioMocks(page, { role: 'ADMIN' });
 
         await page.goto('/admin/jobs');
-        await expect(page.getByText(mock.state.ids.failedJobId).first()).toBeVisible();
+        const failedJob = page
+            .getByRole('listitem')
+            .filter({ hasText: mock.state.ids.failedJobId });
+        await expect(failedJob).toBeVisible();
+        await failedJob.getByRole('link', { name: 'Nhật ký quản trị', exact: true }).click();
+        await expect(
+            page.getByRole('heading', { name: 'Chưa có nhật ký quản trị cho tác vụ này' }),
+        ).toBeVisible();
+        await page.getByRole('link', { name: 'Về trang Tác vụ', exact: true }).click();
 
         // Retry failed job -> 202 with new jobId
         await page.getByRole('button', { name: 'Thử lại' }).click();
@@ -465,12 +650,20 @@ test.describe('Studio Admin: RBAC, Dashboard, Users, Moderation, Library, Catego
             )
             .toBe(true);
 
-        // Audit logs page & detail modal
-        await page.goto('/admin/audit-logs');
+        const retryHistory = page.getByRole('link', { name: 'Xem nhật ký thử lại', exact: true });
+        await expect(retryHistory).toBeVisible();
+        const retryLog = mock.state.auditLogs.find(
+            (log) => log.target.id === mock.state.ids.failedJobId,
+        );
+        expect(retryLog?.detail?.newJobId).toBeTruthy();
+        const newJob = page.getByRole('listitem').filter({ hasText: retryLog.detail.newJobId });
+        await newJob.getByRole('link', { name: 'Nhật ký quản trị', exact: true }).click();
+        await expect(page).toHaveURL(new RegExp(`targetId=${retryLog.detail.newJobId}`));
         await expect(
             page.getByRole('heading', { name: 'Nhật ký quản trị', exact: true }),
         ).toBeVisible();
-        await page.getByRole('button', { name: 'Xem chi tiết' }).first().click();
+        const auditRow = page.getByRole('listitem').filter({ hasText: 'Chạy lại tác vụ' });
+        await auditRow.getByRole('button', { name: 'Xem chi tiết' }).click();
         const logDialog = page.getByRole('dialog');
         await expect(logDialog).toBeVisible();
         await expect(

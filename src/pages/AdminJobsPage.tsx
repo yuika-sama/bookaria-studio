@@ -92,7 +92,7 @@ function AdminJobItem({ job, onRetry, retryDisabled }: AdminJobItemProps) {
 
                     <div className="min-w-0 flex-1 space-y-1.5">
                         <div className="flex flex-wrap items-center gap-2">
-                            <h2 className="font-semibold text-base text-foreground leading-tight">
+                            <h2 className="m-0 font-semibold text-base text-foreground leading-tight">
                                 {jobTypeLabel[job.type] || job.type}
                             </h2>
                             <Badge tone={statusTone} className="px-2 py-0.5 font-medium text-xs">
@@ -129,7 +129,7 @@ function AdminJobItem({ job, onRetry, retryDisabled }: AdminJobItemProps) {
                     >
                         <Link to={auditTargetLink('JOB', job.id)}>
                             <FileText className="h-3.5 w-3.5" />
-                            <span>Nhật ký tác vụ</span>
+                            <span>Nhật ký quản trị</span>
                         </Link>
                     </Button>
 
